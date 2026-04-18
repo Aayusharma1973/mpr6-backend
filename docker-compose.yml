@@ -1,0 +1,102 @@
+version: "3.9"
+
+# ────────────────────────────────────────────────────────────────────────────
+#  RxGuardian — Docker Compose
+#  Services:  api (FastAPI)  |  mongo (MongoDB)  |  mongo-express (admin UI)
+# ────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── FastAPI backend ─────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rxguardian_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # MongoDB — uses the service name "mongo" as hostname
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB_NAME: rxguardian
+
+      # SQLite lives inside the container; bind-mounted volume below persists it
+      SQLITE_DB_PATH: /app/data/rxguardian_local.db
+
+      # JWT — CHANGE THIS in production!
+      JWT_SECRET_KEY: super_secret_rxguardian_key_change_in_prod
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRE_MINUTES: "10080"
+
+      # CORS — add your Expo / React Native dev URLs here
+      ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:8081,exp://localhost:8081"
+
+      APP_ENV: development
+    volumes:
+      # Persist SQLite DB and log files across container restarts
+      - sqlite_data:/app/data
+      - log_data:/app/logs
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - rxguardian_net
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── MongoDB ─────────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7.0
+    container_name: rxguardian_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"      # Expose so you can connect with Compass locally
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - rxguardian_net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Mongo Express (web admin UI) ─────────────────────────────────────────────
+  mongo-express:
+    image: mongo-express:1.0.2
+    container_name: rxguardian_mongo_express
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_PORT: "27017"
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: rxguardian123
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - rxguardian_net
+
+# ── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  mongo_data:
+    driver: local
+  sqlite_data:
+    driver: local
+  log_data:
+    driver: local
+
+# ── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  rxguardian_net:
+    driver: bridge
