@@ -18,7 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TRANSFORMERS_VERBOSITY=error \
     TOKENIZERS_PARALLELISM=false \
     BITSANDBYTES_NOWELCOME=1 \
-    HF_HUB_DISABLE_PROGRESS_BARS=1
+    HF_HUB_DISABLE_PROGRESS_BARS=0
 
 # System libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -53,8 +53,11 @@ COPY . .
 
 RUN mkdir -p /app/data /app/logs
 
-# Non-root user — /home/rxguardian needed for HuggingFace cache volume
+# Non-root user — pre-create the HF cache dir HERE (as root) before the
+# volume is mounted, so it's owned by rxguardian. Without this, Docker
+# creates the volume mount as root → PermissionError when HF tries to write.
 RUN useradd -m -u 1001 rxguardian && \
+    mkdir -p /home/rxguardian/.cache/huggingface && \
     chown -R rxguardian:rxguardian /app /home/rxguardian
 USER rxguardian
 
