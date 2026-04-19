@@ -154,7 +154,7 @@ def _run_inference(image_bytes: bytes, prompt: str) -> str:
         {
             "role": "user",
             "content": [
-                {"type": "image", "image": pil_img},
+                {"type": "image", "image": pil_img, "max_pixels": 1003520},
                 {"type": "text",  "text": prompt},
             ],
         }
@@ -168,6 +168,8 @@ def _run_inference(image_bytes: bytes, prompt: str) -> str:
     inputs = _processor(
         text=[text],
         images=image_inputs,
+        padding=True,
+        truncation=False,
         return_tensors="pt",
     ).to(device)
 
@@ -220,7 +222,7 @@ def _run_chat_inference(image_bytes: bytes, question: str, history: list[dict]) 
     messages.append({
         "role": "user",
         "content": [
-            {"type": "image", "image": pil_img},
+            {"type": "image", "image": pil_img, "max_pixels": 1003520},
             {"type": "text",  "text": question},
         ],
     })
@@ -233,6 +235,8 @@ def _run_chat_inference(image_bytes: bytes, question: str, history: list[dict]) 
     inputs = _processor(
         text=[text],
         images=image_inputs,
+        padding=True,
+        truncation=False,
         return_tensors="pt",
     ).to(device)
 

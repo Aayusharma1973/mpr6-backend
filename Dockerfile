@@ -10,15 +10,15 @@
 #    confirmed working from the r1.txt pip freeze.
 # ════════════════════════════════════════════════════════════════════════════
 
-FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime
+FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    TRANSFORMERS_VERBOSITY=error \
     TOKENIZERS_PARALLELISM=false \
     BITSANDBYTES_NOWELCOME=1 \
     HF_HUB_DISABLE_PROGRESS_BARS=0
+# TRANSFORMERS_VERBOSITY=error \
 
 # System libs
 RUN apt-get update && apt-get install -y --no-install-recommends \

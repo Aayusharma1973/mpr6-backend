@@ -75,7 +75,7 @@ def _check_ollama() -> bool:
 def _build_rag_context(medicines: list[dict]) -> str:
     """Build the RAG context string from local drug_db + FAISS."""
     try:
-        import tools  # from app/ai/agent/tools.py
+        import agent.tools as tools # from app/ai/agent/tools.py
         sections = []
         for med in medicines:
             sections.append(tools.format_drug_summary(med))
@@ -191,7 +191,7 @@ async def search_pharmeasy(medicines: list[dict]) -> list[dict]:
     Returns list of results with top 3 links each.
     """
     try:
-        import pharmeasy_scraper  # from app/ai/agent/
+        import agent.pharmeasy_scraper as pharmeasy_scraper  # from app/ai/agent/pharmeasy_scraper.py
         loop = asyncio.get_event_loop()
         results = await loop.run_in_executor(
             None,
