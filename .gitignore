@@ -15,3 +15,26 @@ build/
 .mypy_cache/
 htmlcov/
 .coverage
+
+app/ai/best_adapter
+app/ai/agent/_medicine_data_cache.csv
+
+# ML junk
+*.pt
+*.bin
+*.safetensors
+*.onnx
+
+# HuggingFace cache
+.cache/
+hf_cache/
+*.ckpt
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs / DB
+*.log
+*.db
+
