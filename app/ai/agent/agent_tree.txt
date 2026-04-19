@@ -1,0 +1,20 @@
+Folder PATH listing for volume Windows-SSD
+Volume serial number is D652-0898
+C:.
+¦   agent.py
+¦   agent_tree.txt
+¦   build_db.py
+¦   drug_db.json
+¦   pharmeasy_scraper.py
+¦   synonyms.py
+¦   tools.py
+¦   _medicine_data_cache.csv
+¦   
++---faiss_index
+¦       chunks.json
+¦       index.faiss
+¦       
++---__pycache__
+        synonyms.cpython-312.pyc
+        tools.cpython-312.pyc
+        

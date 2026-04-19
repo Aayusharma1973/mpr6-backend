@@ -45,3 +45,23 @@ class MedicineOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ── Scan-only response (no DB write) ─────────────────────────────────────────
+
+class ScannedMedicine(BaseModel):
+    name:      str
+    dosage:    str
+    frequency: str
+
+
+class ScanResult(BaseModel):
+    """
+    Returned by POST /medicines/scan-only.
+    Parses the prescription image and returns the medicine list
+    without writing anything to the database.
+    """
+    ok:        bool
+    medicines: list[ScannedMedicine]
+    raw_text:  Optional[str] = None
+    error:     Optional[str] = None

@@ -1,0 +1,1 @@
+# AI module — Qwen OCR + Ollama agent

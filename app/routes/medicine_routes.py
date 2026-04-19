@@ -1,12 +1,45 @@
 """
-Medicine CRUD routes + prescription image upload.
+app/routes/medicine_routes.py
+───────────────────────────────
+Medicine CRUD + two prescription image endpoints:
+
+  POST /medicines/scan-only   — parse image, return medicines, NO DB write
+  POST /medicines/from-image  — parse image, save FIRST medicine to DB
 """
+
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
-from app.schemas.medicine_schemas import MedicineCreate, MedicineUpdate, MedicineOut
+from app.schemas.medicine_schemas import (
+    MedicineCreate,
+    MedicineUpdate,
+    MedicineOut,
+    ScanResult,
+)
 from app.services import medicine_service
 from app.auth.dependencies import get_current_user
 
 router = APIRouter(prefix="/medicines", tags=["Medicines"])
+
+
+@router.post(
+    "/scan-only",
+    response_model=ScanResult,
+    status_code=200,
+    summary="Scan a prescription image — returns detected medicines, no DB write",
+)
+async def scan_prescription(
+    file: UploadFile = File(..., description="Prescription image (JPEG / PNG)"),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Upload a prescription image.  Qwen OCR detects ALL medicines and returns them.
+    **Nothing is saved to the database.**
+
+    Typical frontend flow:
+    1. Call this endpoint to preview all detected medicines.
+    2. User reviews and optionally edits the list.
+    3. Call POST /medicines/manual for each confirmed medicine.
+    """
+    return await medicine_service.scan_only_from_image(file)
 
 
 @router.post(
@@ -26,16 +59,17 @@ async def add_manual(
     "/from-image",
     response_model=MedicineOut,
     status_code=201,
-    summary="Add a medicine by scanning a prescription image",
+    summary="Add a medicine by scanning a prescription image (saves first detected medicine)",
 )
 async def add_from_image(
     file: UploadFile = File(..., description="Prescription image (JPEG / PNG)"),
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Upload a prescription image.  The backend runs OCR (Tesseract) to extract
-    medicine name, dosage, and frequency.  The result is saved to MongoDB and
-    returned.  Fields can be corrected with PUT /medicines/{id}.
+    Upload a prescription image.  Qwen OCR extracts medicines.
+    The **first** detected medicine is saved and returned.
+    For saving all detected medicines, use POST /medicines/scan-only first,
+    then POST /medicines/manual for each one.
     """
     return await medicine_service.create_medicine_from_image(current_user["id"], file)
 

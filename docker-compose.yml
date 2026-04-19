@@ -1,62 +1,109 @@
 version: "3.9"
 
-# ────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 #  RxGuardian — Docker Compose
-#  Services:  api (FastAPI)  |  mongo (MongoDB)  |  mongo-express (admin UI)
-# ────────────────────────────────────────────────────────────────────────────
+#  Services:  api (FastAPI + Qwen VLM)  |  mongo  |  mongo-express
+#
+#  GCP deployment checklist (do in order):
+#    1. Create a VM with a GPU — use "Deep Learning on Linux" image so
+#       NVIDIA drivers are pre-installed. Recommended: n1-standard-4 + T4.
+#    2. SSH into the VM and run:  chmod +x gcp_gpu_setup.sh && ./gcp_gpu_setup.sh
+#    3. docker compose up --build -d
+#    4. docker logs -f rxguardian_api   ← watch Qwen load
+#
+#  GPU passthrough requires TWO things in this file:
+#    a) runtime: nvidia          ← tells Docker to use nvidia-container-runtime
+#    b) deploy.resources...      ← tells Swarm / newer Compose about the device
+#  On plain `docker compose` (non-Swarm) only (a) is strictly needed,
+#  but keeping (b) makes it forward-compatible with Swarm deploys.
+# ─────────────────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── FastAPI backend ─────────────────────────────────────────────────────────
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
   api:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: rxguardian_api
     restart: unless-stopped
+
+    # This is the line that actually passes the GPU through to the container.
+    # deploy.resources.reservations.devices alone is NOT enough on plain docker compose.
+    runtime: nvidia
+
     ports:
       - "8000:8000"
+
     environment:
-      # MongoDB — uses the service name "mongo" as hostname
+      # ── NVIDIA passthrough ───────────────────────────────────────────────────
+      # Required by nvidia-container-toolkit to expose the GPU inside the container
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+
+      # ── MongoDB ──────────────────────────────────────────────────────────────
       MONGO_URI: mongodb://mongo:27017
       MONGO_DB_NAME: rxguardian
 
-      # SQLite lives inside the container; bind-mounted volume below persists it
+      # ── SQLite (persisted via volume) ────────────────────────────────────────
       SQLITE_DB_PATH: /app/data/rxguardian_local.db
 
-      # JWT — CHANGE THIS in production!
+      # ── JWT — CHANGE THIS before going to production ─────────────────────────
       JWT_SECRET_KEY: super_secret_rxguardian_key_change_in_prod
       JWT_ALGORITHM: HS256
       JWT_EXPIRE_MINUTES: "10080"
 
-      # CORS — add your Expo / React Native dev URLs here
+      # ── CORS — add your React Native / Expo dev URLs ─────────────────────────
       ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:8081,exp://localhost:8081"
 
-      APP_ENV: development
+      APP_ENV: production
+
+      # ── Ollama — if running on the same GCP VM use localhost ─────────────────
+      OLLAMA_HOST: http://host.docker.internal:11434
+
+      # ── HuggingFace cache (persisted via hf_cache volume) ────────────────────
+      HF_HOME: /home/rxguardian/.cache/huggingface
+      TRANSFORMERS_CACHE: /home/rxguardian/.cache/huggingface
+
+    # Forward-compatible GPU reservation (needed for Docker Swarm / newer Compose)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
     volumes:
-      # Persist SQLite DB and log files across container restarts
       - sqlite_data:/app/data
       - log_data:/app/logs
+      - hf_cache:/home/rxguardian/.cache/huggingface
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     depends_on:
       mongo:
         condition: service_healthy
+
     networks:
       - rxguardian_net
+
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 15s
-      timeout: 5s
+      interval: 30s
+      timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 120s      # Qwen2-VL takes ~30-60 s to load; give it headroom
 
-  # ── MongoDB ─────────────────────────────────────────────────────────────────
+  # ── MongoDB ──────────────────────────────────────────────────────────────────
   mongo:
     image: mongo:7.0
     container_name: rxguardian_mongo
     restart: unless-stopped
     ports:
-      - "27017:27017"      # Expose so you can connect with Compass locally
+      - "27017:27017"         # Expose so you can connect with Compass locally
     volumes:
       - mongo_data:/data/db
     networks:
@@ -87,7 +134,7 @@ services:
     networks:
       - rxguardian_net
 
-# ── Volumes ──────────────────────────────────────────────────────────────────
+# ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   mongo_data:
     driver: local
@@ -95,8 +142,10 @@ volumes:
     driver: local
   log_data:
     driver: local
+  hf_cache:
+    driver: local
 
-# ── Networks ─────────────────────────────────────────────────────────────────
+# ── Networks ──────────────────────────────────────────────────────────────────
 networks:
   rxguardian_net:
     driver: bridge

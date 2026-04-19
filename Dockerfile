@@ -1,8 +1,28 @@
-# ── Stage: builder ───────────────────────────────────────────────────────────
-FROM python:3.12-slim AS builder
+# ════════════════════════════════════════════════════════════════════════════
+#  RxGuardian — Dockerfile
+#
+#  Base image: pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime
+#    ↳ This is the closest official pytorch image to what r1.txt used
+#      (torch==2.11.0+cu130). cu130 wheels install on top of a cu12.x base fine.
+#
+#  CRITICAL: --extra-index-url must be cu130, not cu121.
+#    torch==2.11.0+cu130 / torchvision==0.26.0+cu130 are the EXACT versions
+#    confirmed working from the r1.txt pip freeze.
+# ════════════════════════════════════════════════════════════════════════════
 
-# System deps for Pillow, bcrypt, and Tesseract OCR
+FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TRANSFORMERS_VERBOSITY=error \
+    TOKENIZERS_PARALLELISM=false \
+    BITSANDBYTES_NOWELCOME=1 \
+    HF_HUB_DISABLE_PROGRESS_BARS=1
+
+# System libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     gcc \
     libffi-dev \
     libssl-dev \
@@ -12,47 +32,44 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libleptonica-dev \
     libpng-dev \
     libjpeg-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /install
-COPY requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install --prefix=/install/pkg --no-cache-dir -r requirements.txt
-
-
-# ── Stage: runtime ────────────────────────────────────────────────────────────
-FROM python:3.12-slim
-
-# Only runtime libs — no compiler toolchain
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tesseract-ocr \
-    tesseract-ocr-eng \
-    libpng-dev \
-    libjpeg-dev \
+    libgomp1 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy installed Python packages from builder
-COPY --from=builder /install/pkg /usr/local
+COPY requirements.txt .
 
-# Copy application source
+# Install into the conda env Python uses.
+# --extra-index-url cu130 matches torch==2.11.0+cu130 in requirements.txt.
+RUN pip install --upgrade pip && \
+    pip install \
+    --no-cache-dir \
+    --extra-index-url https://download.pytorch.org/whl/cu130 \
+    -r requirements.txt
+
+# Copy app source AFTER pip so source edits don't bust the layer cache
 COPY . .
 
-# Create directories that the app needs at runtime
-RUN mkdir -p /app/logs
 RUN mkdir -p /app/data /app/logs
 
-# Non-root user for security
+# Non-root user — /home/rxguardian needed for HuggingFace cache volume
 RUN useradd -m -u 1001 rxguardian && \
-    mkdir -p /app/data /app/logs && \
-    chown -R rxguardian:rxguardian /app
+    chown -R rxguardian:rxguardian /app /home/rxguardian
 USER rxguardian
 
 EXPOSE 8000
 
-# Health-check so docker-compose knows when the service is ready
-HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+# Long start-period: Qwen2-VL-2B takes ~30-60 s to load into VRAM
+HEALTHCHECK \
+    --interval=30s \
+    --timeout=10s \
+    --start-period=120s \
+    --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Single worker — model lives in one process's GPU memory.
+CMD ["uvicorn", "app.main:app", \
+    "--host", "0.0.0.0", \
+    "--port", "8000", \
+    "--workers", "1"]

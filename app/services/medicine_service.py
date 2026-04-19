@@ -1,11 +1,26 @@
 """
+app/services/medicine_service.py
+──────────────────────────────────
 Business logic for Medicine CRUD + image-based creation.
+
+Changes from original:
+  - create_medicine_from_image now uses Qwen OCR (via app/utils/ocr.py)
+    and creates ONE medicine document per prescription for backward compat,
+    but also returns all detected medicines via the new scan-only endpoint.
+  - scan_only_from_image: parse a prescription image without any DB write.
 """
+
 from datetime import datetime, timezone
 from fastapi import HTTPException, status, UploadFile
 from bson import ObjectId
 from app.database.mongo import medicines_col
-from app.schemas.medicine_schemas import MedicineCreate, MedicineUpdate, MedicineOut
+from app.schemas.medicine_schemas import (
+    MedicineCreate,
+    MedicineUpdate,
+    MedicineOut,
+    ScanResult,
+    ScannedMedicine,
+)
 from app.utils.mongo_helpers import doc_to_dict, str_to_oid
 from app.utils.ocr import extract_from_image
 from loguru import logger
@@ -30,7 +45,9 @@ async def create_medicine(user_id: str, data: MedicineCreate) -> MedicineOut:
 
 async def create_medicine_from_image(user_id: str, file: UploadFile) -> MedicineOut:
     """
-    Reads the uploaded prescription image, runs OCR, and stores a medicine doc.
+    Upload a prescription image → Qwen OCR → store the FIRST detected medicine.
+    For storing ALL detected medicines at once, use scan_only_from_image and
+    then call create_medicine for each one from the frontend.
     """
     content_type = file.content_type or "image/jpeg"
     if not content_type.startswith("image/"):
@@ -40,25 +57,68 @@ async def create_medicine_from_image(user_id: str, file: UploadFile) -> Medicine
         )
 
     image_bytes = await file.read()
-    logger.info(f"Running OCR on image ({len(image_bytes)} bytes) for user {user_id}")
+    logger.info(f"Running Qwen OCR on image ({len(image_bytes)} bytes) for user {user_id}")
     parsed = await extract_from_image(image_bytes, content_type)
 
     col = medicines_col()
     doc = {
-        "user_id": user_id,
-        "name": parsed.get("name", "Unknown"),
-        "dosage": parsed.get("dosage", "Unknown"),
-        "frequency": parsed.get("frequency", "1x Daily"),
-        "time_slots": [],
-        "instructions": parsed.get("instructions", ""),
+        "user_id":       user_id,
+        "name":          parsed.get("name", "Unknown"),
+        "dosage":        parsed.get("dosage", "Unknown"),
+        "frequency":     parsed.get("frequency", "Unknown"),
+        "time_slots":    [],
+        "instructions":  parsed.get("instructions", ""),
         "duration_days": None,
-        "ocr_raw": parsed.get("ocr_raw", ""),
+        "ocr_raw":       parsed.get("ocr_raw", ""),
         "ocr_simulated": parsed.get("ocr_simulated", True),
-        "created_at": datetime.now(timezone.utc),
+        "created_at":    datetime.now(timezone.utc),
     }
     result = await col.insert_one(doc)
     doc["_id"] = result.inserted_id
     return _medicine_out(doc)
+
+
+async def scan_only_from_image(file: UploadFile) -> ScanResult:
+    """
+    Parse a prescription image with Qwen OCR and return all detected medicines.
+    Nothing is written to the database.
+    The frontend can review the results and then call POST /medicines/manual
+    for each medicine the user confirms.
+    """
+    content_type = file.content_type or "image/jpeg"
+    if not content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only image files are accepted.",
+        )
+
+    image_bytes = await file.read()
+    logger.info(f"Scan-only OCR on image ({len(image_bytes)} bytes)")
+    parsed = await extract_from_image(image_bytes, content_type)
+
+    if parsed.get("ocr_simulated") or not parsed.get("medicines"):
+        return ScanResult(
+            ok=False,
+            medicines=[],
+            raw_text=parsed.get("ocr_raw", ""),
+            error=parsed.get("instructions", "OCR failed"),
+        )
+
+    medicines = [
+        ScannedMedicine(
+            name=m.get("name", "Unknown"),
+            dosage=m.get("dosage", "Unknown"),
+            frequency=m.get("frequency", "Unknown"),
+        )
+        for m in parsed["medicines"]
+    ]
+
+    return ScanResult(
+        ok=True,
+        medicines=medicines,
+        raw_text=parsed.get("ocr_raw", ""),
+        error=None,
+    )
 
 
 async def list_medicines(user_id: str) -> list[MedicineOut]:
