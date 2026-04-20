@@ -42,7 +42,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
 
       # ── MongoDB ──────────────────────────────────────────────────────────────
-      MONGO_URI: mongodb://mongo:27017
+      MONGO_URI: mongodb+srv://ayaanshaikh9421_db_user:aayusharma1973@rxguardian.3aju2kb.mongodb.net/?appName=rxguardian
       MONGO_DB_NAME: rxguardian
 
       # ── SQLite (persisted via volume) ────────────────────────────────────────

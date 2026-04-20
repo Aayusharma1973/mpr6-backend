@@ -20,14 +20,57 @@ class ChatMessageOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# ── PharmEasy structured result ───────────────────────────────────────────────
+
+class PharmEasyProduct(BaseModel):
+    """Single product page result for one medicine."""
+    title: str
+    url:   str
+
+
+class PharmEasyMedicineResult(BaseModel):
+    """All product results for one medicine."""
+    medicine: str
+    results:  list[PharmEasyProduct]
+
+
+# ── Chat response ─────────────────────────────────────────────────────────────
+
 class ChatResponse(BaseModel):
-    user_message: ChatMessageOut
-    bot_message:  ChatMessageOut
+    """
+    Response shape from POST /chat and POST /chat/with-image.
+
+    user_message       — the user's message echoed back (saved to DB)
+    bot_message        — the bot's plain-text reply (saved to DB, no URLs)
+    pharmeasy_results  — populated only when the PharmEasy tool was called;
+                         None otherwise so the frontend skips the product card section.
+
+    Example when tool was called:
+    {
+        "user_message": { ... },
+        "bot_message":  { ... "message": "Found your medicines on PharmEasy! 🎉" },
+        "pharmeasy_results": [
+            {
+                "medicine": "Metformin",
+                "results": [
+                    {"title": "Glycomet Sr 500mg Strip Of 20 Tablets ...", "url": "https://pharmeasy.in/..."},
+                    {"title": "Istamet 50/500mg Strip Of 15 Tablets ...",  "url": "https://pharmeasy.in/..."},
+                    {"title": "Glyciphage Sr 500mg Strip Of 10 Tablets ...","url": "https://pharmeasy.in/..."}
+                ]
+            },
+            {
+                "medicine": "Atorvastatin",
+                "results": [ ... ]
+            }
+        ]
+    }
+    """
+    user_message:      ChatMessageOut
+    bot_message:       ChatMessageOut
+    pharmeasy_results: Optional[list[PharmEasyMedicineResult]] = None
 
 
 # ── Image-chat schema ─────────────────────────────────────────────────────────
-# Used by POST /chat/with-image (multipart form)
-# The image itself is passed as UploadFile — this schema carries only the text.
 
 class ChatWithImageMessageIn(BaseModel):
     """
@@ -42,17 +85,12 @@ class ChatWithImageMessageIn(BaseModel):
     )
 
 
-# ── PharmEasy search result schemas ──────────────────────────────────────────
+# ── Legacy / standalone PharmEasy search schemas ──────────────────────────────
+# Kept for any routes that expose a direct /search endpoint.
 
 class PharmEasyLink(BaseModel):
     title: str
     url:   str
-
-
-class PharmEasyMedicineResult(BaseModel):
-    medicine: str
-    links:    list[PharmEasyLink]
-    error:    Optional[str] = None
 
 
 class PharmEasySearchResponse(BaseModel):

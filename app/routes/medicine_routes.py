@@ -4,7 +4,7 @@ app/routes/medicine_routes.py
 Medicine CRUD + two prescription image endpoints:
 
   POST /medicines/scan-only   — parse image, return medicines, NO DB write
-  POST /medicines/from-image  — parse image, save FIRST medicine to DB
+  POST /medicines/from-image  — parse image, save ALL medicines to DB
 """
 
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
@@ -57,19 +57,17 @@ async def add_manual(
 
 @router.post(
     "/from-image",
-    response_model=MedicineOut,
+    response_model=list[MedicineOut],
     status_code=201,
-    summary="Add a medicine by scanning a prescription image (saves first detected medicine)",
+    summary="Add medicines by scanning a prescription image (saves ALL detected medicines)",
 )
 async def add_from_image(
     file: UploadFile = File(..., description="Prescription image (JPEG / PNG)"),
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Upload a prescription image.  Qwen OCR extracts medicines.
-    The **first** detected medicine is saved and returned.
-    For saving all detected medicines, use POST /medicines/scan-only first,
-    then POST /medicines/manual for each one.
+    Upload a prescription image. Qwen OCR extracts ALL medicines.
+    Each detected medicine is saved and the list of saved medicines is returned.
     """
     return await medicine_service.create_medicine_from_image(current_user["id"], file)
 

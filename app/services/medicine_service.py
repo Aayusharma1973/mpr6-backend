@@ -5,8 +5,7 @@ Business logic for Medicine CRUD + image-based creation.
 
 Changes from original:
   - create_medicine_from_image now uses Qwen OCR (via app/utils/ocr.py)
-    and creates ONE medicine document per prescription for backward compat,
-    but also returns all detected medicines via the new scan-only endpoint.
+    and creates ALL detected medicine documents per prescription.
   - scan_only_from_image: parse a prescription image without any DB write.
 """
 
@@ -43,11 +42,9 @@ async def create_medicine(user_id: str, data: MedicineCreate) -> MedicineOut:
     return _medicine_out(doc)
 
 
-async def create_medicine_from_image(user_id: str, file: UploadFile) -> MedicineOut:
+async def create_medicine_from_image(user_id: str, file: UploadFile) -> list[MedicineOut]:
     """
-    Upload a prescription image → Qwen OCR → store the FIRST detected medicine.
-    For storing ALL detected medicines at once, use scan_only_from_image and
-    then call create_medicine for each one from the frontend.
+    Upload a prescription image → Qwen OCR → store ALL detected medicines.
     """
     content_type = file.content_type or "image/jpeg"
     if not content_type.startswith("image/"):
@@ -60,22 +57,33 @@ async def create_medicine_from_image(user_id: str, file: UploadFile) -> Medicine
     logger.info(f"Running Qwen OCR on image ({len(image_bytes)} bytes) for user {user_id}")
     parsed = await extract_from_image(image_bytes, content_type)
 
+    if not parsed.get("medicines"):
+        # If no medicines detected, we still return an empty list or could raise error.
+        # Based on scan_only_from_image logic, if ocr_simulated or no medicines, it might be a failure.
+        # But here we'll just return what was found.
+        return []
+
     col = medicines_col()
-    doc = {
-        "user_id":       user_id,
-        "name":          parsed.get("name", "Unknown"),
-        "dosage":        parsed.get("dosage", "Unknown"),
-        "frequency":     parsed.get("frequency", "Unknown"),
-        "time_slots":    [],
-        "instructions":  parsed.get("instructions", ""),
-        "duration_days": None,
-        "ocr_raw":       parsed.get("ocr_raw", ""),
-        "ocr_simulated": parsed.get("ocr_simulated", True),
-        "created_at":    datetime.now(timezone.utc),
-    }
-    result = await col.insert_one(doc)
-    doc["_id"] = result.inserted_id
-    return _medicine_out(doc)
+    created_medicines = []
+    
+    for m in parsed["medicines"]:
+        doc = {
+            "user_id":       user_id,
+            "name":          m.get("name", "Unknown"),
+            "dosage":        m.get("dosage", "Unknown"),
+            "frequency":     m.get("frequency", "Unknown"),
+            "time_slots":    [],
+            "instructions":  "",
+            "duration_days": None,
+            "ocr_raw":       parsed.get("ocr_raw", ""),
+            "ocr_simulated": parsed.get("ocr_simulated", False),
+            "created_at":    datetime.now(timezone.utc),
+        }
+        result = await col.insert_one(doc)
+        doc["_id"] = result.inserted_id
+        created_medicines.append(_medicine_out(doc))
+        
+    return created_medicines
 
 
 async def scan_only_from_image(file: UploadFile) -> ScanResult:

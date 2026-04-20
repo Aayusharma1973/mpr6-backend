@@ -4,12 +4,15 @@ app/services/chat_service.py
 Business logic for Chat.
 
 Two entry-points:
-  send_message(user_id, data, db)           — text-only chat
-  send_message_with_image(user_id, message, image_bytes, db)  — image+text chat
+  send_message(user_id, data, db)                              — text-only chat
+  send_message_with_image(user_id, message, image_bytes, db)   — image+text chat
 
 Both use the SAME SQLite chat_messages table so history is always unified.
-The Ollama agent receives the full conversation history on every call,
-so switching between text and image messages mid-conversation works seamlessly.
+
+ChatResponse now carries an optional `pharmeasy_results` field that is
+populated only when the PharmEasy tool was called — the frontend renders
+product cards from this structured data, while `bot_message.message` stays
+clean plain text (no URLs).
 """
 
 from datetime import datetime, timezone
@@ -20,6 +23,8 @@ from app.schemas.chat_schemas import (
     ChatMessageIn,
     ChatMessageOut,
     ChatResponse,
+    PharmEasyMedicineResult,
+    PharmEasyProduct,
 )
 from app.database.mongo import medicines_col
 from app.ai import agent_service, qwen_ocr
@@ -29,10 +34,7 @@ from loguru import logger
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _get_history_as_turns(user_id: str, db: AsyncSession) -> list[dict]:
-    """
-    Load chat history from SQLite and convert to the format
-    agent_service.chat_reply expects: [{"role": ..., "content": ...}]
-    """
+    """Load chat history and convert to [{"role": ..., "content": ...}] format."""
     stmt = (
         select(ChatMessage)
         .where(ChatMessage.user_id == user_id)
@@ -54,7 +56,14 @@ async def _get_user_medicines(user_id: str) -> list[dict]:
         col    = medicines_col()
         cursor = col.find({"user_id": user_id}, {"name": 1, "dosage": 1, "frequency": 1})
         docs   = await cursor.to_list(length=50)
-        return [{"name": d.get("name"), "dosage": d.get("dosage"), "frequency": d.get("frequency")} for d in docs]
+        return [
+            {
+                "name":      d.get("name"),
+                "dosage":    d.get("dosage"),
+                "frequency": d.get("frequency"),
+            }
+            for d in docs
+        ]
     except Exception as exc:
         logger.warning(f"Could not fetch medicines for user {user_id}: {exc}")
         return []
@@ -87,6 +96,30 @@ async def _persist_pair(
     return user_msg, bot_msg
 
 
+def _parse_pharmeasy_results(
+    raw: list[dict] | None,
+) -> list[PharmEasyMedicineResult] | None:
+    """
+    Convert the raw list from agent_service into validated Pydantic models.
+    Returns None if raw is None or empty so the frontend key is absent.
+    """
+    if not raw:
+        return None
+    parsed = []
+    for item in raw:
+        products = [
+            PharmEasyProduct(title=p["title"], url=p["url"])
+            for p in item.get("results", [])
+        ]
+        parsed.append(
+            PharmEasyMedicineResult(
+                medicine=item["medicine"],
+                results=products,
+            )
+        )
+    return parsed or None
+
+
 # ── Public service functions ──────────────────────────────────────────────────
 
 async def send_message(
@@ -96,17 +129,19 @@ async def send_message(
 ) -> ChatResponse:
     """
     Text-only chat turn.
-    Loads full history → calls Ollama → saves pair → returns both messages.
+    Loads full history → calls agent (with tool loop) → saves pair → returns response.
     """
-    history  = await _get_history_as_turns(user_id, db)
+    history   = await _get_history_as_turns(user_id, db)
     medicines = await _get_user_medicines(user_id)
 
-    bot_text = await agent_service.chat_reply(
+    # agent_service.chat_reply now returns a ChatReplyResult dataclass
+    result = await agent_service.chat_reply(
         user_message=data.message,
         history=history,
         medicines=medicines,
     )
 
+    bot_text = result.content
     user_msg, bot_msg = await _persist_pair(user_id, data.message, bot_text, db)
 
     logger.debug(f"Chat [text] user={user_id}: {data.message[:60]}")
@@ -114,6 +149,7 @@ async def send_message(
     return ChatResponse(
         user_message=ChatMessageOut.model_validate(user_msg),
         bot_message=ChatMessageOut.model_validate(bot_msg),
+        pharmeasy_results=_parse_pharmeasy_results(result.pharmeasy_results),
     )
 
 
@@ -125,24 +161,22 @@ async def send_message_with_image(
 ) -> ChatResponse:
     """
     Image + text chat turn.
-    Loads the SAME history as text chat -> calls Qwen with image+history
-    -> saves pair to SAME table -> history stays unified.
+    Uses Qwen VLM — tool-calling is not supported here (image chat is
+    explanation-only), so pharmeasy_results is always None.
     """
     history = await _get_history_as_turns(user_id, db)
-    # Use Qwen VLM to answer the image question with full history context
     bot_text = await qwen_ocr.answer_with_image(
         image_bytes=image_bytes,
         question=message,
         history=history,
     )
-    # Store user message as-is (we can't store the image bytes in SQLite,
-    # so we note "[image attached]" in the message for history continuity)
     user_text_stored = f"[image] {message}"
     user_msg, bot_msg = await _persist_pair(user_id, user_text_stored, bot_text, db)
     logger.debug(f"Chat [image] user={user_id}: {message[:60]}")
     return ChatResponse(
         user_message=ChatMessageOut.model_validate(user_msg),
         bot_message=ChatMessageOut.model_validate(bot_msg),
+        pharmeasy_results=None,   # image chat doesn't trigger PharmEasy search
     )
 
 

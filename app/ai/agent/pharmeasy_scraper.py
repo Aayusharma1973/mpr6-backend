@@ -13,6 +13,7 @@ Requirements:
 
 import time
 import re
+import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -35,19 +36,20 @@ def _make_driver() -> webdriver.Chrome:
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
-    opts.add_argument(
-        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    )
+    
+    # Use a more modern and random-ish user agent to avoid detection
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ]
+    opts.add_argument(f"user-agent={random.choice(user_agents)}")
 
     # Try webdriver-manager first, fall back to system chromedriver
     try:
         from webdriver_manager.chrome import ChromeDriverManager
         import os
         driver_path = ChromeDriverManager().install()
-        # Fix permissions on Windows — webdriver-manager sometimes downloads
-        # without execute bit, causing "wrong permissions" error
         try:
             os.chmod(driver_path, 0o755)
         except Exception:
@@ -68,46 +70,49 @@ def _make_driver() -> webdriver.Chrome:
 def search_one(medicine_name: str, dosage: str = "", top_n: int = 3) -> dict:
     """
     Search PharmEasy for one medicine.
-    Returns:
-      {
-        "medicine": "Metformin",
-        "links": [
-          {"title": "Metformin 500mg Tab...", "url": "https://pharmeasy.in/..."},
-          ...
-        ],
-        "error": None
-      }
     """
     query = f"{medicine_name} {dosage}".strip()
     url   = f"https://pharmeasy.in/search/all?name={query.replace(' ', '%20')}"
 
+    # Regex for valid PharmEasy product links
+    # Matches /online-medicine-order/some-product-name-12345
+    # Optional trailing slash or query params
+    PRODUCT_REGEX = r'/online-medicine-order/[a-z0-9-]+-\d+/?(\?.*)?$'
+
     driver = None
     try:
+        # Add random sleep before starting to stagger parallel requests
+        time.sleep(random.uniform(0.5, 2.5))
+        
         driver = _make_driver()
         driver.get(url)
 
-        # Wait for product cards — PharmEasy uses data-testid or class patterns
+        # Wait for product cards
         wait = WebDriverWait(driver, 15)
 
-        # PharmEasy search results container selectors (in priority order)
-        # The main results list is scoped to avoid grabbing nav/autocomplete/related links
+        # Custom wait: wait until at least one link matching our PRODUCT_REGEX appears
+        def product_link_present(d):
+            links = d.find_elements(By.CSS_SELECTOR, "a[href*='online-medicine-order']")
+            for l in links:
+                href = l.get_attribute("href") or ""
+                if re.search(PRODUCT_REGEX, href):
+                    return True
+            return False
+
+        try:
+            wait.until(product_link_present)
+        except Exception:
+            # If our specific wait fails, the page might just be slow or have no results
+            time.sleep(2)
+
+        # PharmEasy search results container selectors
         RESULT_CONTAINER_SELECTORS = [
             "div.search-listing-page",
             "div[class*='search-listing']",
             "div[class*='product-list']",
             "div[class*='ProductList']",
-            "main",  # fallback: scope to <main> at minimum
+            "main",
         ]
-
-        # Wait for at least one product link
-        try:
-            wait.until(
-                EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, "a[href*='online-medicine-order']")
-                )
-            )
-        except Exception:
-            time.sleep(3)
 
         # Find the narrowest container that holds the search results
         container = None
@@ -133,30 +138,41 @@ def search_one(medicine_name: str, dosage: str = "", top_n: int = 3) -> dict:
             # Clean up title
             title = re.sub(r"\s+", " ", title).strip()
 
-            # Skip duplicates
             if not href or href in seen_urls:
                 continue
 
-            # Skip nav/header links — real product pages end with a numeric ID
-            # e.g. /online-medicine-order/glycomet-500mg-tablet-12345
-            # Bad links: /online-medicine-order?src=header
-            if not re.search(r'/online-medicine-order/[a-z0-9-]+-\d+$', href):
+            # Verify it's a real product page
+            if not re.search(PRODUCT_REGEX, href):
                 continue
 
             if not title:
                 title = medicine_name
 
-            seen_urls.add(href)
+            # Normalize URL (remove query params for deduplication)
+            base_url = href.split("?")[0].rstrip("/")
+            if base_url in seen_urls:
+                continue
+                
+            seen_urls.add(base_url)
             results.append({"title": title, "url": href})
 
             if len(results) >= top_n:
                 break
 
+        error_msg = None
+        if not results:
+            # Diagnose why nothing was found
+            page_title = driver.title
+            if "Robot" in page_title or "Captcha" in page_title:
+                error_msg = "Bot detection / Captcha triggered"
+            else:
+                error_msg = "No results found on page"
+
         return {
             "medicine": medicine_name,
             "query":    query,
             "links":    results,
-            "error":    None if results else "No results found",
+            "error":    error_msg,
         }
 
     except Exception as e:
