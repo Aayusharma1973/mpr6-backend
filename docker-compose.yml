@@ -42,7 +42,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
 
       # ── MongoDB ──────────────────────────────────────────────────────────────
-      MONGO_URI: mongodb+srv://ayaanshaikh9421_db_user:aayusharma1973@rxguardian.3aju2kb.mongodb.net/?appName=rxguardian
+      MONGO_URI: chutiya hoga tu
       MONGO_DB_NAME: rxguardian
 
       # ── SQLite (persisted via volume) ────────────────────────────────────────
@@ -52,7 +52,7 @@ services:
       JWT_SECRET_KEY: super_secret_rxguardian_key_change_in_prod
       JWT_ALGORITHM: HS256
       JWT_EXPIRE_MINUTES: "10080"
-      HF_TOKEN: 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
+      HF_TOKEN: chutiya hoga tu
 
       # ── CORS — add your React Native / Expo dev URLs ─────────────────────────
       ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:8081,exp://localhost:8081"
