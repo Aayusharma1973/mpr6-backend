@@ -1,262 +1,121 @@
-# 💊 RxGuardian — FastAPI Backend
+# 🛡️ RxGuardian — Advanced AI Medicine Tracking Backend
 
-Complete medicine-tracking backend built with **FastAPI**, **MongoDB** (Motor async), **SQLite** (SQLAlchemy async), and **Docker**.
+RxGuardian is a sophisticated medical assistant backend that combines **Large Language Models (LLMs)**, **Vision Language Models (VLMs)**, and **automated adherence tracking** to help users manage their prescriptions safely and effectively.
 
----
-
-## 📁 Project Structure
-
-```
-rxguardian-backend/
-├── app/
-│   ├── main.py               ← FastAPI app factory, routers, middleware
-│   ├── config.py             ← Pydantic-settings (reads .env)
-│   ├── auth/
-│   │   ├── jwt_handler.py    ← JWT create / decode
-│   │   └── dependencies.py   ← get_current_user FastAPI dependency
-│   ├── database/
-│   │   ├── mongo.py          ← Motor async MongoDB connection
-│   │   └── sqlite.py         ← SQLAlchemy async SQLite engine + session
-│   ├── models/
-│   │   └── sqlite_models.py  ← SQLAlchemy ORM (ChatMessage, DailyTracking)
-│   ├── routes/
-│   │   ├── auth_routes.py
-│   │   ├── medicine_routes.py
-│   │   ├── chat_routes.py
-│   │   └── tracking_routes.py
-│   ├── schemas/              ← Pydantic request/response models
-│   ├── services/             ← Business logic layer
-│   └── utils/
-│       ├── password.py       ← bcrypt helpers
-│       ├── mongo_helpers.py  ← doc normalisation (_id → id)
-│       └── ocr.py            ← Tesseract OCR for prescription images
-├── logs/                     ← Log files (auto-created)
-├── Dockerfile                ← Multi-stage Docker build
-├── docker-compose.yml        ← api + mongo + mongo-express
-├── requirements.txt
-└── .env                      ← Environment variables (copy & edit)
-```
+Built with **FastAPI**, **MongoDB**, **SQLite**, and powered by **Ollama (Qwen2.5)** and **Qwen2-VL**.
 
 ---
 
-## 🖥️ What You Need Installed on Your PC
+## ✨ Key Features
 
-| Tool | Why | Install |
-|---|---|---|
-| **Docker Desktop** | Runs all containers | https://www.docker.com/products/docker-desktop |
-| **Docker Compose** | Bundled with Docker Desktop | ✅ Already included |
-| *(optional)* **curl / Postman** | Testing API manually | https://www.postman.com |
-| *(optional)* **MongoDB Compass** | GUI for MongoDB data | https://www.mongodb.com/products/compass |
-
-> ✅ **That's it.** No Python, no pip, no venv needed on your machine. Everything runs inside Docker.
-
----
-
-## 🚀 Quick Start
-
-### 1. Clone / copy the project
-```bash
-# If you have git
-git clone <your-repo-url> rxguardian-backend
-cd rxguardian-backend
-
-# OR just navigate to the folder
-cd rxguardian-backend
-```
-
-### 2. Edit the `.env` file (optional for dev, required for prod)
-```bash
-# The .env file is pre-filled with safe dev defaults.
-# For production, change JWT_SECRET_KEY to a long random string.
-nano .env      # or open in any editor
-```
-
-### 3. Build and start all containers
-```bash
-docker compose up --build
-```
-
-The first build downloads the Python base image, installs Tesseract OCR, and installs all pip packages. **This takes ~3–5 minutes the first time.** Subsequent starts are instant.
-
-### 4. Watch for these success messages in the terminal
-```
-rxguardian_api   | ✓ MongoDB connected
-rxguardian_api   | ✓ SQLite tables created
-rxguardian_api   | Uvicorn running on http://0.0.0.0:8000
-```
+- 👁️ **Smart Prescription Scan**: Vision-based medicine extraction using `Qwen2-VL-2B` (OCR).
+- 🤖 **RxGuardian AI Chat**: Interactive drug Q&A and explanation powered by `qwen2.5:3b`.
+- 💊 **Adherence Prediction**: AI-driven insights that predict the next likely missed dose based on tracking history.
+- ⚠️ **Safety Validator**: Real-time interaction alerts and side-effect analysis for new medications.
+- 🛒 **PharmEasy Integration**: Automatic product search and price comparison for detected medicines.
+- 📅 **Hybrid Adherence Tracking**: Fast local tracking (SQLite) with automatic cloud sync (MongoDB) upon day completion.
+- 🔐 **Secure by Default**: JWT-based authentication with protected routes.
 
 ---
 
-## ✅ Verifying the Backend is Running
+## 🏗️ Architecture & Stack
 
-### A) Browser — Swagger UI
-Open: **http://localhost:8000/docs**
+| Component | Technology | Role |
+| :--- | :--- | :--- |
+| **Framework** | FastAPI | High-performance async API |
+| **Primary Database** | MongoDB (Motor) | Cloud-synced adherence logs & user data |
+| **Local Cache** | SQLite (SQLAlchemy) | Active tracking & chat history |
+| **VLM (Vision)** | Qwen2-VL-2B | Prescription image analysis |
+| **LLM (Chat/Logic)** | Qwen2.5-3B (Ollama) | Natural language interaction & insights |
+| **External API** | PharmEasy | Live medicine product data |
+| **Deployment** | Docker & Compose | Containerized orchestration |
 
-You should see the full interactive API documentation.
+---
 
-### B) Health Check endpoint
+## 🚀 Quick Start (Docker)
+
+### 1. Prerequisites
+- **Docker Desktop** installed.
+- **NVIDIA GPU** (Recommended for Qwen2-VL performance).
+- **Ollama** installed on the host machine (if not running inside Docker).
+
+### 2. Environment Setup
+Create a `.env` file in the root directory:
+```env
+MONGO_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/rxguardian
+JWT_SECRET_KEY=your_random_secret_string
+HF_TOKEN=your_huggingface_token
+ALLOWED_ORIGINS=http://localhost:8081,exp://localhost:8081
+```
+
+### 3. Launch
 ```bash
-curl http://localhost:8000/health
+docker compose up --build -d
 ```
-Expected response:
-```json
-{"status": "ok", "version": "1.0.0", "app": "RxGuardian"}
-```
-
-### C) Mongo Express (database admin UI)
-Open: **http://localhost:8081**
-- Username: `admin`
-- Password: `rxguardian123`
-
-You can browse collections, run queries, and verify data is being stored.
-
-### D) Test the full auth flow with curl
-```bash
-# 1. Register a new user
-curl -X POST http://localhost:8000/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Ayaan Khan","email":"ayaan@test.com","password":"secret123"}'
-
-# 2. Copy the access_token from the response, then:
-TOKEN="paste_your_token_here"
-
-# 3. Add a medicine
-curl -X POST http://localhost:8000/api/v1/medicines/manual \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Metformin",
-    "dosage": "500mg",
-    "frequency": "2x Daily",
-    "time_slots": [{"time": "08:00 AM", "instructions": "After meal"}],
-    "instructions": "Take with water"
-  }'
-
-# 4. List medicines
-curl http://localhost:8000/api/v1/medicines \
-  -H "Authorization: Bearer $TOKEN"
-
-# 5. Mark medicine as taken (replace MEDICINE_ID)
-curl -X POST http://localhost:8000/api/v1/track/take \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"medicine_id": "MEDICINE_ID", "date": "2026-04-18"}'
-
-# 6. Get today's status
-curl http://localhost:8000/api/v1/track/today \
-  -H "Authorization: Bearer $TOKEN"
-
-# 7. Chat with AI
-curl -X POST http://localhost:8000/api/v1/chat \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "What are the side effects of Metformin?"}'
-```
+*Note: The first build will take several minutes as it installs Tesseract OCR and CUDA-enabled PyTorch.*
 
 ---
 
 ## 📡 API Reference
 
-| Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| POST | `/api/v1/auth/register` | ❌ | Register new user |
-| POST | `/api/v1/auth/login` | ❌ | Login, get JWT |
-| POST | `/api/v1/medicines/manual` | ✅ | Add medicine manually |
-| POST | `/api/v1/medicines/from-image` | ✅ | Add via prescription photo (OCR) |
-| GET | `/api/v1/medicines` | ✅ | List all medicines |
-| GET | `/api/v1/medicines/{id}` | ✅ | Get single medicine |
-| PUT | `/api/v1/medicines/{id}` | ✅ | Update medicine |
-| DELETE | `/api/v1/medicines/{id}` | ✅ | Delete medicine |
-| POST | `/api/v1/chat` | ✅ | Send message to AI |
-| GET | `/api/v1/chat/history` | ✅ | Fetch chat history |
-| POST | `/api/v1/track/take` | ✅ | Mark medicine as taken |
-| GET | `/api/v1/track/today` | ✅ | Today's adherence status |
-| GET | `/health` | ❌ | Health check |
+### 🤖 AI Insights (`/api/v1/ai`)
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| POST | `/interaction-alert` | Checks if a new medicine conflicts with user profile/meds. |
+| POST | `/suggestions` | Bioavailability and lifestyle timing tips (e.g., "Take with water"). |
+| POST | `/insights` | Adherence analysis and missed dose prediction. |
+| POST | `/side-effects` | Detailed side-effect profile for specific medications. |
+
+### 💬 Chat System (`/api/v1/chat`)
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| POST | `/` | Text-only message to RxGuardian AI. |
+| POST | `/with-image` | Upload a prescription image and ask questions about it. |
+| GET | `/history` | Fetch paginated chat history. |
+
+### 💊 Medicine Management (`/api/v1/medicines`)
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| POST | `/scan-only` | Preview detected medicines from an image (No DB write). |
+| POST | `/from-image` | Scan and automatically save all detected medicines. |
+| POST | `/manual` | Add a medicine record manually. |
+| GET | `/` | List all active medications. |
+
+### 📅 Adherence Tracking (`/api/v1/track`)
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| POST | `/take` | Mark a specific dose as taken. |
+| GET | `/today` | Get current adherence status for the day. |
 
 ---
 
-## 🔄 SQLite → MongoDB Sync Logic
+## 📱 Mobile Integration (React Native / Expo)
 
-When you call `POST /api/v1/track/take`:
-1. The dose is recorded in **SQLite** (`daily_tracking` table).
-2. The backend checks: *are ALL medicines for that user+date marked taken?*
-3. If **yes** → the day's records are written to **MongoDB** (`daily_logs` collection) and deleted from SQLite.
-4. The response includes `synced_to_mongo: true/false`.
+When connecting from a mobile device or emulator, use your machine's **Local IP Address** instead of `localhost`.
 
----
+- **Android Emulator:** `http://10.0.2.2:8000`
+- **Physical Device:** `http://192.168.x.x:8000`
 
-## 🐳 Docker Commands Reference
-
-```bash
-# Start in background (detached)
-docker compose up -d --build
-
-# View live logs
-docker compose logs -f api
-
-# View only MongoDB logs
-docker compose logs -f mongo
-
-# Stop everything
-docker compose down
-
-# Stop AND delete all data volumes (fresh start)
-docker compose down -v
-
-# Rebuild just the API image (after code changes)
-docker compose up --build api
-
-# Open a shell inside the running API container
-docker exec -it rxguardian_api bash
+### CORS Configuration
+Ensure your device's URL is added to `ALLOWED_ORIGINS` in `.env`:
+```env
+ALLOWED_ORIGINS=http://192.168.1.5:8081,exp://192.168.1.5:8081
 ```
 
 ---
 
-## 🔧 Environment Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `MONGO_URI` | `mongodb://mongo:27017` | MongoDB connection string |
-| `MONGO_DB_NAME` | `rxguardian` | Database name |
-| `SQLITE_DB_PATH` | `./rxguardian_local.db` | SQLite file path |
-| `JWT_SECRET_KEY` | (change this!) | Secret for signing tokens |
-| `JWT_ALGORITHM` | `HS256` | JWT algorithm |
-| `JWT_EXPIRE_MINUTES` | `10080` (7 days) | Token expiry |
-| `ALLOWED_ORIGINS` | `localhost:3000,8081` | CORS allowed origins |
+## 🩺 System Health & Monitoring
+- **Swagger UI:** `http://localhost:8000/docs`
+- **Health Check:** `http://localhost:8000/health` (Reports VLM model loading status)
+- **DB Admin:** `http://localhost:8081` (Mongo Express)
 
 ---
 
-## 🏗️ Connecting from React Native (Expo)
+## 🤝 Troubleshooting
 
-```javascript
-// In your Expo app — use your machine's local IP (not localhost)
-const API_BASE = "http://192.168.x.x:8000/api/v1";
-
-// Login example
-const res = await fetch(`${API_BASE}/auth/login`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ email: "ayaan@test.com", password: "secret123" }),
-});
-const { access_token } = await res.json();
-
-// Authenticated request
-const meds = await fetch(`${API_BASE}/medicines`, {
-  headers: { Authorization: `Bearer ${access_token}` },
-});
-```
-
-> 💡 Find your local IP: run `ipconfig` (Windows) or `ifconfig` (Mac/Linux).
-> On Android emulator use `http://10.0.2.2:8000`.
-
----
-
-## 🩺 Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| `Connection refused` on port 8000 | Check `docker compose up` is still running |
-| MongoDB ping fails on startup | Wait 10–15s; Mongo takes time to initialise |
-| OCR returns "simulated" result | Tesseract is bundled in Docker — it will work inside the container |
-| `JWT_SECRET_KEY` warning | Change it in `.env` before going to production |
-| Port 8081 already in use | Change Mongo Express port in `docker-compose.yml` |
+| Issue | Solution |
+| :--- | :--- |
+| **Qwen Model Loading** | The VLM takes ~60s to load into GPU memory. Check `/health` status. |
+| **Ollama Connection** | Ensure Ollama is running on the host and reachable via `host.docker.internal`. |
+| **Permission Denied** | The Dockerfile uses a non-root user (`rxguardian`). Ensure `hf_cache` volume has correct permissions. |
+| **CORS Errors** | Verify your React Native dev URL matches the `ALLOWED_ORIGINS` exactly. |
