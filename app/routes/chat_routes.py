@@ -20,6 +20,7 @@ from app.services.chat_service import (
     send_message as send_chat_message,
     send_message_with_image as send_image_chat_message,
     get_history as get_chat_history,
+    clear_history as clear_chat_history,
 )
 from app.auth.dependencies import get_current_user
 from app.database.sqlite import get_session
@@ -101,3 +102,18 @@ async def get_history(
     '[image] <user question>' so context is preserved).
     """
     return await get_chat_history(current_user["id"], db, limit=limit)
+
+@router.delete(
+    "/history",
+    status_code=200,
+    summary="Clear all chat history for the current user",
+)
+async def clear_history(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Permanently deletes all chat messages for the current user from SQLite.
+    Cannot be undone.
+    """
+    return await clear_chat_history(current_user["id"], db)

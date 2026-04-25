@@ -19,7 +19,7 @@ from slowapi.errors import RateLimitExceeded
 from app.config import get_settings
 from app.database.mongo import connect_mongo, close_mongo
 from app.database.sqlite import init_sqlite
-from app.routes import auth_routes, medicine_routes, chat_routes, tracking_routes
+from app.routes import auth_routes, medicine_routes, chat_routes, tracking_routes, ai_routes
 
 import torch
 
@@ -136,6 +136,7 @@ app.include_router(auth_routes.router,      prefix=API_PREFIX)
 app.include_router(medicine_routes.router,  prefix=API_PREFIX)
 app.include_router(chat_routes.router,      prefix=API_PREFIX)
 app.include_router(tracking_routes.router,  prefix=API_PREFIX)
+app.include_router(ai_routes.router,        prefix=API_PREFIX)
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

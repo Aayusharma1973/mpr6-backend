@@ -17,7 +17,7 @@ class ChatMessage(Base):
     timestamp: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, server_default=func.now()
     )
-
+    pharmeasy_results: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
 
 class DailyTracking(Base):
     __tablename__ = "daily_tracking"

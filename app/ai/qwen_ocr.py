@@ -51,10 +51,11 @@ OCR_PROMPT = (
 )
 
 CHAT_WITH_IMAGE_SYSTEM = (
-    "You are a friendly medical assistant. "
-    "The user has shared a prescription image along with a question. "
-    "Look at the image carefully and answer the question in simple, clear language. "
-    "Do not scare the user. Keep answers brief and friendly."
+    "You are a helpful medical assistant specializing in prescription analysis. "
+    "The user has shared a prescription image and has a question about it. "
+    "Examine the prescription carefully — read all medicine names, dosages, and instructions visible. "
+    "Answer the user's specific question directly and clearly. "
+    "Be concise but complete. If you can read specific details from the prescription, state them explicitly."
 )
 
 # ── Module-level state (populated at startup) ─────────────────────────────────
@@ -84,6 +85,31 @@ def load_qwen_model() -> None:
         BitsAndBytesConfig,
     )
     from peft import PeftModel
+    import huggingface_hub
+
+    # ── HuggingFace auth ──────────────────────────────────────────────────────
+    # transformers.from_pretrained() does NOT automatically read HF_TOKEN.
+    # We must call login() explicitly so the hub client has credentials for
+    # both the model download and any gated-repo checks.
+    # We read whichever env var is set (docker-compose sets HF_TOKEN;
+    # some setups use HUGGING_FACE_HUB_TOKEN — we check both).
+    hf_token = (
+        os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    )
+    if hf_token:
+        try:
+            huggingface_hub.login(token=hf_token, add_to_git_credential=False)
+            logger.info("HuggingFace login successful.")
+        except Exception as exc:
+            logger.warning(f"HuggingFace login failed (will try without token): {exc}")
+        hf_token_kwarg = hf_token
+    else:
+        logger.warning(
+            "No HF_TOKEN or HUGGING_FACE_HUB_TOKEN env var found. "
+            "Download will fail for private/gated models."
+        )
+        hf_token_kwarg = None
 
     adapter_str = str(ADAPTER_PATH)
     logger.info(f"Loading Qwen2-VL base model: {BASE_MODEL}")

@@ -36,6 +36,7 @@ import tools
 
 # ── Config ────────────────────────────────────────────────────────────────────
 DEFAULT_MODEL = "qwen2.5:3b"
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
 FREQ_LABELS = {
     "1-0-0": "once in the morning",
@@ -113,7 +114,8 @@ def parse_prescription_input(text: str) -> list[dict] | None:
 def ask_llm(messages: list[dict], model: str) -> str:
     """Call Ollama and return response text."""
     try:
-        resp = ollama.chat(
+        client = ollama.Client(host=OLLAMA_HOST)
+        resp = client.chat(
             model=model,
             messages=messages,
             options={"temperature": 0.3, "num_predict": 400},

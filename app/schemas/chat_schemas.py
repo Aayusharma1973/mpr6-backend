@@ -10,28 +10,35 @@ class ChatMessageIn(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
 
 
-class ChatMessageOut(BaseModel):
-    id: int
-    user_id: str
-    message: str
-    sender: Literal["user", "bot"]
-    timestamp: datetime
-
-    model_config = {"from_attributes": True}
-
-
 # ── PharmEasy structured result ───────────────────────────────────────────────
+# Defined BEFORE ChatMessageOut so ChatMessageOut can reference them directly
+# without forward references (which cause model_validate issues with SQLAlchemy rows)
 
 class PharmEasyProduct(BaseModel):
     """Single product page result for one medicine."""
     title: str
     url:   str
+    image: Optional[str] = None  # CDN image URL from PharmEasy, None if not found
 
 
 class PharmEasyMedicineResult(BaseModel):
     """All product results for one medicine."""
     medicine: str
     results:  list[PharmEasyProduct]
+
+
+# ── Chat message schemas ──────────────────────────────────────────────────────
+
+class ChatMessageOut(BaseModel):
+    id: int
+    user_id: str
+    message: str
+    sender: Literal["user", "bot"]
+    timestamp: datetime
+    # Populated on bot messages that triggered PharmEasy search; None otherwise.
+    pharmeasy_results: Optional[list[PharmEasyMedicineResult]] = None
+
+    model_config = {"from_attributes": True}
 
 
 # ── Chat response ─────────────────────────────────────────────────────────────
@@ -41,31 +48,15 @@ class ChatResponse(BaseModel):
     Response shape from POST /chat and POST /chat/with-image.
 
     user_message       — the user's message echoed back (saved to DB)
-    bot_message        — the bot's plain-text reply (saved to DB, no URLs)
+    pre_tool_message   — the LLM's first reply when it answered AND called a tool
+                         in the same turn (e.g. explained medicines then searched).
+                         None when no tool was called.
+    bot_message        — the bot's final plain-text reply (saved to DB, no URLs)
     pharmeasy_results  — populated only when the PharmEasy tool was called;
                          None otherwise so the frontend skips the product card section.
-
-    Example when tool was called:
-    {
-        "user_message": { ... },
-        "bot_message":  { ... "message": "Found your medicines on PharmEasy! 🎉" },
-        "pharmeasy_results": [
-            {
-                "medicine": "Metformin",
-                "results": [
-                    {"title": "Glycomet Sr 500mg Strip Of 20 Tablets ...", "url": "https://pharmeasy.in/..."},
-                    {"title": "Istamet 50/500mg Strip Of 15 Tablets ...",  "url": "https://pharmeasy.in/..."},
-                    {"title": "Glyciphage Sr 500mg Strip Of 10 Tablets ...","url": "https://pharmeasy.in/..."}
-                ]
-            },
-            {
-                "medicine": "Atorvastatin",
-                "results": [ ... ]
-            }
-        ]
-    }
     """
     user_message:      ChatMessageOut
+    pre_tool_message:  Optional[ChatMessageOut] = None
     bot_message:       ChatMessageOut
     pharmeasy_results: Optional[list[PharmEasyMedicineResult]] = None
 
@@ -73,10 +64,6 @@ class ChatResponse(BaseModel):
 # ── Image-chat schema ─────────────────────────────────────────────────────────
 
 class ChatWithImageMessageIn(BaseModel):
-    """
-    Text part of an image+text chat message.
-    The image is a separate UploadFile field in the route.
-    """
     message: str = Field(
         ...,
         min_length=1,
@@ -86,7 +73,6 @@ class ChatWithImageMessageIn(BaseModel):
 
 
 # ── Legacy / standalone PharmEasy search schemas ──────────────────────────────
-# Kept for any routes that expose a direct /search endpoint.
 
 class PharmEasyLink(BaseModel):
     title: str

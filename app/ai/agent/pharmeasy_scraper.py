@@ -1,7 +1,7 @@
 """
 pharmeasy_scraper.py — Parallel Selenium scraper for PharmEasy
 Launches one headless Chrome per medicine simultaneously.
-Returns top 3 product page links per medicine.
+Returns top 3 product page links + product image per medicine.
 
 Works on:
   - Windows (local dev)
@@ -13,7 +13,6 @@ Requirements:
 
 import time
 import re
-import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -36,14 +35,11 @@ def _make_driver() -> webdriver.Chrome:
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
-    
-    # Use a more modern and random-ish user agent to avoid detection
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ]
-    opts.add_argument(f"user-agent={random.choice(user_agents)}")
+    opts.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
 
     # Try webdriver-manager first, fall back to system chromedriver
     try:
@@ -65,47 +61,85 @@ def _make_driver() -> webdriver.Chrome:
     return driver
 
 
+# ── Image alt text extraction ─────────────────────────────────────────────────
+
+def _alt_from_title(title: str) -> str:
+    """
+    PharmEasy image alt text == product name only (everything before ' By ').
+
+    e.g. "Omee 20mg Strip Of 20 Capsules By ALKEM LABORATORIES LTD 20 Capsule(s)..."
+      →  "Omee 20mg Strip Of 20 Capsules"
+    """
+    # Split on " By " (case-insensitive) and take the first part
+    parts = re.split(r'\s+[Bb]y\s+', title, maxsplit=1)
+    return parts[0].strip()
+
+
+# ── Fetch image from the product page (fallback) ──────────────────────────────
+
+def _fetch_image_from_product_page(driver: webdriver.Chrome, product_url: str, alt_text: str) -> str | None:
+    """
+    Navigate to the product page and grab the src of the main product image.
+    Uses the alt text we derived from the title for a precise match.
+    Falls back to any pharmeasy CDN image if alt match fails.
+    Returns the image URL string or None.
+    """
+    try:
+        driver.get(product_url)
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "img"))
+        )
+
+        # Try exact alt match first
+        imgs = driver.find_elements(By.CSS_SELECTOR, f'img[alt="{alt_text}"]')
+        for img in imgs:
+            src = img.get_attribute("src") or ""
+            if "cdn" in src and src.startswith("https://"):
+                return src
+
+        # Fallback — any image from PharmEasy's CDN on this page
+        all_imgs = driver.find_elements(By.TAG_NAME, "img")
+        for img in all_imgs:
+            src = img.get_attribute("src") or ""
+            if "cdn01.pharmeasy.in" in src or "cdn02.pharmeasy.in" in src:
+                if src.startswith("https://"):
+                    return src
+
+    except Exception:
+        pass
+
+    return None
+
+
 # ── Single medicine search ────────────────────────────────────────────────────
 
 def search_one(medicine_name: str, dosage: str = "", top_n: int = 3) -> dict:
     """
     Search PharmEasy for one medicine.
+    Returns:
+      {
+        "medicine": "Metformin",
+        "links": [
+          {
+            "title": "Metformin 500mg Tab...",
+            "url":   "https://pharmeasy.in/...",
+            "image": "https://cdn01.pharmeasy.in/..."   ← NEW (None if not found)
+          },
+          ...
+        ],
+        "error": None
+      }
     """
     query = f"{medicine_name} {dosage}".strip()
     url   = f"https://pharmeasy.in/search/all?name={query.replace(' ', '%20')}"
 
-    # Regex for valid PharmEasy product links
-    # Matches /online-medicine-order/some-product-name-12345
-    # Optional trailing slash or query params
-    PRODUCT_REGEX = r'/online-medicine-order/[a-z0-9-]+-\d+/?(\?.*)?$'
-
     driver = None
     try:
-        # Add random sleep before starting to stagger parallel requests
-        time.sleep(random.uniform(0.5, 2.5))
-        
         driver = _make_driver()
         driver.get(url)
 
-        # Wait for product cards
         wait = WebDriverWait(driver, 15)
 
-        # Custom wait: wait until at least one link matching our PRODUCT_REGEX appears
-        def product_link_present(d):
-            links = d.find_elements(By.CSS_SELECTOR, "a[href*='online-medicine-order']")
-            for l in links:
-                href = l.get_attribute("href") or ""
-                if re.search(PRODUCT_REGEX, href):
-                    return True
-            return False
-
-        try:
-            wait.until(product_link_present)
-        except Exception:
-            # If our specific wait fails, the page might just be slow or have no results
-            time.sleep(2)
-
-        # PharmEasy search results container selectors
         RESULT_CONTAINER_SELECTORS = [
             "div.search-listing-page",
             "div[class*='search-listing']",
@@ -114,7 +148,15 @@ def search_one(medicine_name: str, dosage: str = "", top_n: int = 3) -> dict:
             "main",
         ]
 
-        # Find the narrowest container that holds the search results
+        try:
+            wait.until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "a[href*='online-medicine-order']")
+                )
+            )
+        except Exception:
+            time.sleep(3)
+
         container = None
         for selector in RESULT_CONTAINER_SELECTORS:
             els = driver.find_elements(By.CSS_SELECTOR, selector)
@@ -122,57 +164,84 @@ def search_one(medicine_name: str, dosage: str = "", top_n: int = 3) -> dict:
                 container = els[0]
                 break
 
-        # Grab product links scoped to the container (or full page as last resort)
-        scope = container if container else driver
+        scope   = container if container else driver
         anchors = scope.find_elements(
             By.CSS_SELECTOR, "a[href*='online-medicine-order']"
         )
 
-        seen_urls = set()
-        results   = []
+        seen_urls    = set()
+        candidates   = []   # collect (title, href, anchor_element) first
 
         for anchor in anchors:
             href  = anchor.get_attribute("href") or ""
             title = anchor.get_attribute("title") or anchor.text.strip()
-
-            # Clean up title
             title = re.sub(r"\s+", " ", title).strip()
 
             if not href or href in seen_urls:
                 continue
-
-            # Verify it's a real product page
-            if not re.search(PRODUCT_REGEX, href):
+            if not re.search(r'/online-medicine-order/[a-z0-9-]+-\d+$', href):
                 continue
-
             if not title:
                 title = medicine_name
 
-            # Normalize URL (remove query params for deduplication)
-            base_url = href.split("?")[0].rstrip("/")
-            if base_url in seen_urls:
-                continue
-                
-            seen_urls.add(base_url)
-            results.append({"title": title, "url": href})
+            seen_urls.add(href)
+            candidates.append((title, href, anchor))
 
-            if len(results) >= top_n:
+            if len(candidates) >= top_n:
                 break
 
-        error_msg = None
-        if not results:
-            # Diagnose why nothing was found
-            page_title = driver.title
-            if "Robot" in page_title or "Captcha" in page_title:
-                error_msg = "Bot detection / Captcha triggered"
-            else:
-                error_msg = "No results found on page"
+        results = []
+
+        for title, href, anchor in candidates:
+            alt_text = _alt_from_title(title)
+            image_url = None
+
+            # ── Strategy 1: grab image from the search card itself ────────────
+            # PharmEasy renders a product thumbnail inside each result card.
+            # The anchor wraps the card — walk up to the card container and
+            # look for an <img> with a CDN src inside it.
+            try:
+                # Walk up the DOM to the product card container (usually 2-4 levels up)
+                card = anchor
+                for _ in range(5):
+                    imgs_in_card = card.find_elements(By.TAG_NAME, "img")
+                    for img in imgs_in_card:
+
+                        src = img.get_attribute("src") or img.get_attribute("data-src")
+                        if ("cdn01.pharmeasy.in" in src or "cdn02.pharmeasy.in" in src) and src.startswith("https://"):
+                            image_url = src
+                            break
+                    if image_url:
+                        break
+                    # Move up one level
+                    try:
+                        card = card.find_element(By.XPATH, "..")
+                    except Exception:
+                        break
+            except Exception:
+                pass
+
+            # ── Strategy 2: visit product page if card image not found ────────
+            if not image_url:
+                image_url = _fetch_image_from_product_page(driver, href, alt_text)
+                # Navigate back to search results so remaining cards are still in DOM
+                try:
+                    driver.back()
+                    time.sleep(1)
+                except Exception:
+                    pass
+
+            results.append({
+                "title": _alt_from_title(title),
+                "url":   href,
+                "image": image_url,
+            })
 
         return {
             "medicine": medicine_name,
             "query":    query,
             "links":    results,
-            "error":    error_msg,
+            "error":    None if results else "No results found",
         }
 
     except Exception as e:
@@ -198,10 +267,7 @@ def search_all_parallel(medicines: list[dict], top_n: int = 3) -> list[dict]:
     medicines: [{"name": "Metformin", "dosage": "500mg", ...}, ...]
     Returns list of results in same order as input.
     """
-    # Cap parallelism — too many Chrome instances will crash low-RAM machines
-    # 6 is safe on 8GB+ RAM; GCP n1-standard-2 (7.5GB) handles it fine
     max_workers = min(len(medicines), 6)
-
     results_map = {}
 
     print(f"\n  🔍 Searching PharmEasy for {len(medicines)} medicine(s) in parallel...\n")
@@ -230,7 +296,6 @@ def search_all_parallel(medicines: list[dict], top_n: int = 3) -> list[dict]:
                 }
             results_map[med_name] = result
 
-    # Return in original prescription order
     return [results_map.get(med["name"], {
         "medicine": med["name"],
         "links":    [],
@@ -258,8 +323,10 @@ def format_results(results: list[dict]) -> str:
         else:
             for i, link in enumerate(links, 1):
                 title = link["title"][:60] + "..." if len(link["title"]) > 60 else link["title"]
+                image = link.get("image") or "no image"
                 lines.append(f"  {i}. {title}")
                 lines.append(f"     {link['url']}")
+                lines.append(f"     🖼  {image}")
 
     return "\n".join(lines)
 

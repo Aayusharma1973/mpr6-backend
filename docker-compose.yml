@@ -42,22 +42,22 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
 
       # ── MongoDB ──────────────────────────────────────────────────────────────
-      MONGO_URI: mongodb+srv://ayaanshaikh9421_db_user:aayusharma1973@rxguardian.3aju2kb.mongodb.net/?appName=rxguardian
-      MONGO_DB_NAME: rxguardian
+      MONGO_URI: ${MONGO_URI}
+      MONGO_DB_NAME: ${MONGO_DB_NAME}
 
       # ── SQLite (persisted via volume) ────────────────────────────────────────
       SQLITE_DB_PATH: /app/data/rxguardian_local.db
 
       # ── JWT — CHANGE THIS before going to production ─────────────────────────
-      JWT_SECRET_KEY: super_secret_rxguardian_key_change_in_prod
-      JWT_ALGORITHM: HS256
-      JWT_EXPIRE_MINUTES: "10080"
-      HF_TOKEN: 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
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ALGORITHM: ${JWT_ALGORITHM}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES}
+      HF_TOKEN: ${HF_TOKEN}
 
       # ── CORS — add your React Native / Expo dev URLs ─────────────────────────
-      ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:8081,exp://localhost:8081"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
 
-      APP_ENV: production
+      APP_ENV: ${APP_ENV}
 
       # ── Ollama — if running on the same GCP VM use localhost ─────────────────
       OLLAMA_HOST: http://host.docker.internal:11434
@@ -126,8 +126,8 @@ services:
     environment:
       ME_CONFIG_MONGODB_SERVER: mongo
       ME_CONFIG_MONGODB_PORT: "27017"
-      ME_CONFIG_BASICAUTH_USERNAME: admin
-      ME_CONFIG_BASICAUTH_PASSWORD: rxguardian123
+      ME_CONFIG_BASICAUTH_USERNAME: ${ME_CONFIG_BASICAUTH_USERNAME}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${ME_CONFIG_BASICAUTH_PASSWORD}
       ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
     depends_on:
       mongo:

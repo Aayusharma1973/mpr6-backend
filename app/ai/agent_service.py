@@ -49,6 +49,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 OLLAMA_MODEL    = "qwen2.5:3b"
 MAX_TOOL_ROUNDS = 3   # safety cap — prevents infinite loops
 
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
 # Add agent folder to path so tools/synonyms/pharmeasy_scraper can be imported
 _AGENT_DIR = Path(__file__).parent / "agent"
 if str(_AGENT_DIR) not in sys.path:
@@ -62,37 +64,47 @@ class ChatReplyResult:
     """
     Structured return from chat_reply().
 
-    content           — friendly text the assistant says (no URLs, no links).
-                        Saved to SQLite as the bot message.
+    content           — friendly text the assistant says after any tool calls
+                        (no URLs, no links). Saved to SQLite as the bot message.
+    pre_tool_content  — the LLM's first response text BEFORE it made a tool call
+                        (e.g. answering questions while also deciding to search).
+                        None when no tool was called (content already has everything).
     pharmeasy_results — populated only when search_pharmeasy was called.
                         None otherwise so the frontend knows not to render a
                         medicine card section.
     """
     content: str
+    pre_tool_content: Optional[str] = field(default=None)
     pharmeasy_results: Optional[list[dict]] = field(default=None)
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = """You are RxGuardian, a friendly assistant helping someone understand \
-their prescription medicines and manage them easily.
-
+SYSTEM_PROMPT = """You are RxGuardian, a friendly assistant helping someone understand their prescription medicines and manage them easily.
+ 
 Your style:
 - Talk like a helpful friend, not a doctor
 - Use simple everyday words — no medical jargon
 - Keep things short and easy to read
-- Don't scare the user — mention warnings gently, not dramatically
+- Never scare the user — mention warnings gently
 - Never suggest extra medicines or diagnose anything
-- If something needs a doctor, say so briefly and move on
-
-You have ONE tool available: search_pharmeasy
-Use it whenever the user asks to:
-- order, buy, purchase or find their medicines
-- search for a medicine on PharmEasy
-- get links or prices for medicines
-
-When the tool finishes, write a short friendly message telling the user their medicines \
-are ready to order — do NOT include any URLs or links in your text reply. \
-The frontend will display the product cards separately."""
+ 
+You have ONE tool: search_pharmeasy.
+ 
+TOOL CALL RULES — read carefully:
+- Call search_pharmeasy ONLY when the user explicitly says words like:
+  "order", "buy", "purchase", "find on pharmeasy", "get me a link", "where can i buy"
+- Do NOT call the tool for ANY of these — answer them yourself in plain text:
+  - questions about what medicines are ("what is this?", "what are these?")
+  - questions about how to take medicine ("when do I take this?")
+  - questions about a prescription image ("what does my prescription say?")
+  - general questions about side effects, dosage, interactions
+  - anything that is a question, not a purchase request
+- If you are unsure whether to call the tool, do NOT call it. Answer in text instead.
+ 
+AFTER the tool runs:
+- Write ONE short friendly sentence only (e.g. "Here are your medicines on PharmEasy!")
+- NEVER include URLs, links, or product names in your text reply
+- The app displays the medicine cards automatically"""
 
 FREQ_LABELS = {
     "1-0-0": "once in the morning",
@@ -171,7 +183,7 @@ def _execute_tool(tool_name: str, tool_args: dict) -> str:
                 structured.append({
                     "medicine": r["medicine"],
                     "results": [
-                        {"title": link["title"], "url": link["url"]}
+                        {"title": link["title"], "url": link["url"], "image": link.get("image")}
                         for link in r.get("links", [])
                     ],
                 })
@@ -260,10 +272,12 @@ def _ollama_with_tools(messages: list[dict]) -> tuple[str, Optional[list[dict]]]
 
     current_messages = list(messages)  # don't mutate caller's list
     last_content = ""
+    pre_tool_content: Optional[str] = None  # first LLM text before any tool call
 
     for round_num in range(MAX_TOOL_ROUNDS):
         try:
-            resp = ollama.chat(
+            client = ollama.Client(host=OLLAMA_HOST)
+            resp = client.chat(
                 model=OLLAMA_MODEL,
                 messages=current_messages,
                 tools=ALL_TOOLS,
@@ -273,17 +287,22 @@ def _ollama_with_tools(messages: list[dict]) -> tuple[str, Optional[list[dict]]]
             logger.info(f"[agent] Full LLM Response: {resp}")
         except Exception as exc:
             logger.error(f"Ollama call failed (round {round_num + 1}): {exc}")
-            return "Sorry, I couldn't reach the assistant right now. Please try again.", None
+            return "Sorry, I couldn't reach the assistant right now. Please try again.", None, None
 
         msg = resp.message
         last_content = (msg.content or "").strip()
 
         # ── No tool calls → plain text reply, done ───────────────────────────
         if not msg.tool_calls:
-            return last_content, _last_pharmeasy_results
+            return last_content, pre_tool_content, _last_pharmeasy_results
 
         # ── Tool calls present → execute, then loop ──────────────────────────
         logger.info(f"[agent] Round {round_num + 1}: {len(msg.tool_calls)} tool call(s)")
+
+        # Capture the LLM's text from the FIRST round as pre_tool_content
+        # (subsequent rounds are post-tool summaries, not the "answering" text)
+        if round_num == 0 and last_content:
+            pre_tool_content = last_content
 
         # Append the assistant message that contains the tool_calls
         current_messages.append({
@@ -317,10 +336,19 @@ def _ollama_with_tools(messages: list[dict]) -> tuple[str, Optional[list[dict]]]
                 "name":    tool_name,
                 "content": tool_result,
             })
+        
+        current_messages.append({
+    "role":    "user",
+    "content": (
+        "The search is done. Reply in ONE short friendly sentence confirming "
+        "the medicines were found and are ready to order. "
+        "Do NOT include any URLs, links, or product names in your reply."
+    ),
+})
 
     # Safety cap hit
     logger.warning(f"[agent] Hit MAX_TOOL_ROUNDS ({MAX_TOOL_ROUNDS}) — returning last content")
-    return last_content or "Something went wrong. Please try again.", _last_pharmeasy_results
+    return last_content or "Something went wrong. Please try again.", pre_tool_content, _last_pharmeasy_results
 
 
 # ── Build message list helpers ────────────────────────────────────────────────
@@ -415,10 +443,14 @@ async def chat_reply(
     messages.append({"role": "user", "content": user_message})
 
     loop = asyncio.get_event_loop()
-    content, pharmeasy_results = await loop.run_in_executor(
+    content, pre_tool_content, pharmeasy_results = await loop.run_in_executor(
         None, _ollama_with_tools, messages
     )
-    return ChatReplyResult(content=content, pharmeasy_results=pharmeasy_results)
+    return ChatReplyResult(
+        content=content,
+        pre_tool_content=pre_tool_content or None,
+        pharmeasy_results=pharmeasy_results,
+    )
 
 
 async def search_pharmeasy(medicines: list[dict]) -> list[dict]:
@@ -439,3 +471,87 @@ async def search_pharmeasy(medicines: list[dict]) -> list[dict]:
     except Exception as exc:
         logger.error(f"PharmEasy search failed: {exc}")
         return [{"medicine": m["name"], "links": [], "error": str(exc)} for m in medicines]
+
+
+async def generate_interaction_alert(context_data: dict) -> str:
+    """
+    AI Task: Check if the new_medicine is safe. If not, suggest a generic alternative.
+    """
+    system_message = (
+        "You are the RxGuardian AI safety validator. You will receive a JSON object with a user's profile and medications.\n"
+        "- Task: Check if the 'new_medicine' is safe given the user's allergies and 'current_medications'.\n"
+        "- If a conflict is found, start the message with '⚠️ Interaction Warning'.\n"
+        "- Suggest a generic alternative if the medicine is unsafe.\n"
+        "- Always respond in Markdown. Use Bold for medicine names.\n"
+        "- Keep responses under 150 words.\n"
+        "- Always include the safety disclaimer at the end."
+    )
+    return await _call_ollama_generic(system_message, context_data)
+
+
+async def generate_ai_suggestions(context_data: dict) -> str:
+    """
+    AI Task: Provide 3 tips for better results (bioavailability and timing).
+    """
+    system_message = (
+        "You are the RxGuardian AI medical assistant. You will receive a user's medical profile and medication list.\n"
+        "- Task: Provide 3 tips for better results with their current medications.\n"
+        "- Focus on bioavailability (e.g., 'Take with water, not milk') and lifestyle timing.\n"
+        "- Always respond in Markdown. Use Lists for suggestions.\n"
+        "- Keep responses under 150 words.\n"
+        "- Always include the safety disclaimer at the end."
+    )
+    return await _call_ollama_generic(system_message, context_data)
+
+
+async def generate_ai_insights(context_data: dict) -> str:
+    """
+    AI Task: Predict the next missed dose based on tracking history.
+    """
+    system_message = (
+        "You are the RxGuardian AI health analyst. You will receive a user's weekly tracking history and medication list.\n"
+        "- Task: Analyze the 'missed' patterns in the tracking grid and predict the next likely missed dose.\n"
+        "- Be encouraging but precise in your prediction.\n"
+        "- Always respond in Markdown.\n"
+        "- Keep responses under 150 words.\n"
+        "- Always include the safety disclaimer at the end."
+    )
+    return await _call_ollama_generic(system_message, context_data)
+
+
+async def generate_side_effects(context_data: dict) -> str:
+    """
+    AI Task: Provide common side effects for a specific medicine.
+    """
+    system_message = (
+        "You are the RxGuardian AI clinical assistant. You will receive a medicine's name, dosage, and instructions.\n"
+        "- Task: List the common side effects for this specific medicine.\n"
+        "- Mention which side effects are minor and which require contacting a doctor.\n"
+        "- Always respond in Markdown. Use Bold for medicine names and Lists for side effects.\n"
+        "- Keep responses under 150 words.\n"
+        "- Always include the safety disclaimer at the end."
+    )
+    return await _call_ollama_generic(system_message, context_data)
+
+
+async def _call_ollama_generic(system_message: str, context_data: dict) -> str:
+    """Internal helper to call Ollama with a specific system prompt."""
+    messages = [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": f"Data: {json.dumps(context_data)}"}
+    ]
+
+    loop = asyncio.get_event_loop()
+    try:
+        response = await loop.run_in_executor(
+            None,
+            lambda: __import__("ollama").chat(
+                model=OLLAMA_MODEL,
+                messages=messages,
+                options={"temperature": 0.3, "num_predict": 300},
+            ).message.content.strip()
+        )
+        return response
+    except Exception as exc:
+        logger.error(f"AI call failed: {exc}")
+        return "⚠️ I encountered an error while processing your request. Please try again later.\n\n*Safety Disclaimer: This is an AI-generated response. Always consult with a healthcare professional before making any medical decisions.*"
